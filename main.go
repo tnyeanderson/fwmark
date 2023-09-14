@@ -24,11 +24,11 @@ import (
 // comment of iptables entries created by this plugin.
 const CommentPrefix = "cni-fwmark-"
 
-// AnnotationPrefix is the prefix/FQDN which is used in annotations which
-// control this plugin.
+// AnnotationPrefix is the prefix/FQDN used in pod annotations which control
+// this plugin.
 const AnnotationPrefix = "cni.fwmark.net/"
 
-// AnnotationKeys contains the keys for the annotations which control this
+// AnnotationKeys contains the keys for the pod annotations which control this
 // plugin.
 var AnnotationKeys = struct {
 	Name string
@@ -44,7 +44,7 @@ type Mark struct {
 }
 
 // String returns a string representation of Mark as "mark/mask" in hexadecimal
-// format.
+// format. For example: "0x10/0x10" for decimal 16.
 func (m *Mark) String() string {
 	mask := m.Mask
 	if mask == 0 {
@@ -87,22 +87,32 @@ func (p *PluginConfig) ContainerIP() string {
 	return p.prev.IPs[0].Address.IP.String()
 }
 
-// Mark returns the Mark derived from the pod annotation.
-func (p *PluginConfig) Mark() Mark {
-	name := p.RuntimeConfig.PodAnnotations[AnnotationKeys.Name]
-	return p.Marks[name]
+// Mark returns the Mark derived from the pod annotation and the CNI config
+func (p *PluginConfig) Mark() (*Mark, error) {
+	name, ok := p.RuntimeConfig.PodAnnotations[AnnotationKeys.Name]
+	if !ok {
+		return nil, fmt.Errorf("annotation not found: %s", AnnotationKeys.Name)
+	}
+	mark, ok := p.Marks[name]
+	if !ok {
+		return nil, fmt.Errorf("mark name not found in CNI config: %s", name)
+	}
+	return &mark, nil
 }
 
-// Mark returns the Container ID based on CNI_CONTAINERID.
+// PodHasAnnotation returns true if the pod has a fwmark annotation.
+func (p *PluginConfig) PodHasAnnotation() bool {
+	_, ok := p.RuntimeConfig.PodAnnotations[AnnotationKeys.Name]
+	return ok
+}
+
+// ContainerID returns the Container ID based on CNI_CONTAINERID.
 func (p *PluginConfig) ContainerID() string {
 	return os.Getenv("CNI_CONTAINERID")
 }
 
-// Init parses a JSON plugin config into p, validates and converts it as
-// needed, and returns any errors it encounters along the way.
-//
-// This is basically where all the plugin initialization happens.
-func (p *PluginConfig) Init(stdin []byte) error {
+// Parse reads a PluginConfig from stdin and parses it into p.
+func (p *PluginConfig) Parse(stdin []byte) error {
 	if err := json.Unmarshal(stdin, p); err != nil {
 		return fmt.Errorf("failed to parse network configuration: %v", err)
 	}
@@ -110,7 +120,12 @@ func (p *PluginConfig) Init(stdin []byte) error {
 	if err := version.ParsePrevResult(&p.NetConf); err != nil {
 		return fmt.Errorf("could not parse prevResult: %v", err)
 	}
+	return nil
+}
 
+// Validate ensures the config is valid and converts it as needed, and
+// returns any errors it encounters along the way.
+func (p *PluginConfig) Validate() error {
 	if p.NetConf.PrevResult == nil {
 		return fmt.Errorf("must be called as chained plugin")
 	}
@@ -134,10 +149,21 @@ func (p *PluginConfig) Init(stdin []byte) error {
 	return nil
 }
 
+// Init parses and validates a PluginConfig.
+//
+// This is basically where all the plugin initialization happens.
+func (p *PluginConfig) Init(stdin []byte) error {
+	if err := p.Parse(stdin); err != nil {
+		return err
+	}
+
+	return p.Validate()
+}
+
 // Functions ---------------------------------------------------------------
 
-// buildRule returns a slice representing an iptables rule that is based on the
-// provided arguments.
+// buildRule returns a slice representing an iptables rule/command that is
+// based on the provided arguments.
 func buildRule(action, ip string, mark Mark, comment string) []string {
 	src := fmt.Sprintf("%s/32", ip)
 	return []string{action, "PREROUTING",
@@ -148,8 +174,8 @@ func buildRule(action, ip string, mark Mark, comment string) []string {
 	}
 }
 
-// lookupRulesByComment returns any iptables entries which are currently active
-// and contain the provided comment.
+// lookupRulesByComment returns any existing iptables entries which contain the
+// provided comment.
 func lookupRulesByComment(comment string) ([]string, error) {
 	rules := []string{}
 	cmd := exec.Command("iptables", "-S", "-t", "mangle")
@@ -181,8 +207,6 @@ func getComment() string {
 
 // run executes iptables with the provided arguments.
 func run(args []string) error {
-	log(fmt.Sprintf("%v\n", args))
-
 	cmd := exec.Command("iptables", args...)
 	return cmd.Run()
 }
@@ -208,12 +232,20 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return err
 	}
 
-	if conf.Mark().Mark != 0 {
-		action := "-A"
-		rule := buildRule(action, conf.ContainerIP(), conf.Mark(), getComment())
-		if err := run(rule); err != nil {
-			return err
-		}
+	// Do nothing if the pod has no fwmark annotation
+	if !conf.PodHasAnnotation() {
+		return types.PrintResult(conf.prev, conf.CNIVersion)
+	}
+
+	mark, err := conf.Mark()
+	if err != nil {
+		return err
+	}
+
+	action := "-A"
+	rule := buildRule(action, conf.ContainerIP(), *mark, getComment())
+	if err := run(rule); err != nil {
+		return err
 	}
 
 	return types.PrintResult(conf.prev, conf.CNIVersion)
@@ -222,7 +254,13 @@ func cmdAdd(args *skel.CmdArgs) error {
 // cmdDel is executed when CNI_COMMAND=DEL.
 func cmdDel(args *skel.CmdArgs) error {
 	// IMPORTANT: The DELETE command runs the chain in reverse order, so there
-	// will be no PrevResult!
+	// will be no PrevResult! Hence the use of Parse instead of Init.
+
+	conf := &PluginConfig{}
+	err := conf.Parse(args.StdinData)
+	if err != nil {
+		return err
+	}
 
 	rules, err := lookupRulesByComment(getComment())
 	if err != nil {
@@ -237,7 +275,7 @@ func cmdDel(args *skel.CmdArgs) error {
 		}
 	}
 
-	return nil
+	return types.PrintResult(conf.prev, conf.CNIVersion)
 }
 
 // cmdCheck is executed when CNI_COMMAND=CHECK.
@@ -248,8 +286,18 @@ func cmdCheck(args *skel.CmdArgs) error {
 		return err
 	}
 
+	// Do nothing if the pod has no fwmark annotation
+	if !conf.PodHasAnnotation() {
+		return types.PrintResult(conf.prev, conf.CNIVersion)
+	}
+
+	mark, err := conf.Mark()
+	if err != nil {
+		return err
+	}
+
 	action := "-C"
-	rule := buildRule(action, conf.ContainerIP(), conf.Mark(), getComment())
+	rule := buildRule(action, conf.ContainerIP(), *mark, getComment())
 	if err := run(rule); err != nil {
 		return err
 	}
