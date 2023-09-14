@@ -1,3 +1,40 @@
+/*
+The fwmark CNI plugin allows setting a netfilter/iptables mark based on pod
+annotations.
+
+Add the `fwmark` plugin to the CNI chain after your main network provider
+(flannel, calico, etc):
+
+```json
+{
+  "type": "fwmark",
+  "capabilities": {
+     "io.kubernetes.cri.pod-annotations": true
+  },
+  "marks": {
+     "vpn": {"mark": 16, "mask": 16}
+  }
+}
+
+```
+
+The "16" decimal value mark and mask will be represented as "0x10/0x10" in
+iptables. Add any other names and mark/mask configurations to the marks map to
+have them available as annotation values.
+
+Finally, add the following annotation to a pods and any traffic originating
+from that pod will be marked:
+
+```
+cni.fwmark.net/name: vpn
+```
+
+This will match with the `vpn` entry in the `marks` object in the CNI
+configuration and set the corresponding mark in the `mangle` table for any
+packets originating from the annotated pod.
+
+The possibilities are limitless. The rest is up to you!
+*/
 package main
 
 import (

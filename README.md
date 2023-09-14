@@ -117,8 +117,8 @@ In context, with the default `k3s` CNI configuration:
 
 ```
 
-Now the setup is done! Just mark any pods with the following annotation to set
-the default gateway for that pod:
+Now the setup is done! Just add the following annotation to any pod to set the
+default gateway for that pod:
 
 ```
 cni.fwmark.net/name: vpn
