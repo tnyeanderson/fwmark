@@ -305,7 +305,12 @@ func cmdDel(args *skel.CmdArgs) error {
 		}
 	}
 
-	return types.PrintResult(conf.prev, conf.CNIVersion)
+	// Avoid nil error in PrintResult if we are the first member in the chain.
+	if conf.NetConf.PrevResult == nil {
+		conf.NetConf.PrevResult = &current.Result{}
+	}
+
+	return types.PrintResult(conf.NetConf.PrevResult, conf.CNIVersion)
 }
 
 // cmdCheck is executed when CNI_COMMAND=CHECK.
