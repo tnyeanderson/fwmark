@@ -45,10 +45,11 @@ import (
 	"github.com/containernetworking/cni/pkg/types"
 	current "github.com/containernetworking/cni/pkg/types/100"
 	"github.com/containernetworking/cni/pkg/version"
-	bv "github.com/containernetworking/plugins/pkg/utils/buildversion"
 )
 
 // Globals ------------------------------------------------------------
+
+const PluginVersion = "v0.1.0"
 
 // CommentPrefix is the text printed immediately before the container ID in the
 // comment of iptables entries created by this plugin.
@@ -342,5 +343,6 @@ func cmdCheck(args *skel.CmdArgs) error {
 
 // main runs the corresponding CNI plugin command.
 func main() {
-	skel.PluginMain(cmdAdd, cmdCheck, cmdDel, version.All, bv.BuildString("fwmark"))
+	buildstr := fmt.Sprintf("CNI fwmark plugin %s", PluginVersion)
+	skel.PluginMain(cmdAdd, cmdCheck, cmdDel, version.All, buildstr)
 }
